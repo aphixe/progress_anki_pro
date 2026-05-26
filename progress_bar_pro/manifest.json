@@ -1,0 +1,9 @@
+{
+  "name": "Progress Bar Pro",
+  "package": "progress_bar_pro",
+  "author": "Local",
+  "version": "0.1.0",
+  "homepage": "",
+  "conflicts": [],
+  "min_point_version": 250900
+}

@@ -1,0 +1,21 @@
+{
+  "bar_color": "#2f80ed",
+  "background_color": "#d9dde7",
+  "bubble_color": "#ffffff",
+  "bubble_text_color": "#000000",
+  "bubble_text": "{left} left",
+  "bubble_duration_ms": 1800,
+  "show_answer_time": true,
+  "show_answer_time_chart": true,
+  "always_show_bubble": false,
+  "show_estimated_time": true,
+  "show_finish_time": true,
+  "chart_good_gradient_top": "#a855f7",
+  "chart_good_gradient_bottom": "#4c1d95",
+  "chart_gradient_top": "#a855f7",
+  "chart_gradient_bottom": "#0f172a",
+  "chart_again_gradient_top": "#ef4444",
+  "chart_again_gradient_bottom": "#7f1d1d",
+  "database_location": "",
+  "position": "bottom"
+}
