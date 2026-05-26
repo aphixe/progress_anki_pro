@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/app_icon.png" alt="Progress Bar Pro icon" width="220">
+</p>
+
 # Progress Bar Pro
 
 Progress Bar Pro is an Anki reviewer add-on that adds a configurable progress
@@ -6,6 +10,16 @@ bar, answer bubble, and answer-time mini chart while you study.
 The installable add-on package is:
 
 `progress_bar_pro.ankiaddon`
+
+## Screenshots
+
+### Reviewer Overlay
+
+![Progress Bar Pro reviewer overlay](assets/Screenshot1.png)
+
+### Estimate Data
+
+![Progress Bar Pro estimate data window](assets/Screenshot2.png)
 
 ## Features
 
