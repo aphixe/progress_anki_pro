@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import csv
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import html
 import json
 import math
@@ -49,7 +49,6 @@ from aqt.utils import showInfo
 
 
 ADDON_NAME = "Progress Bar Pro"
-ADDON_VERSION = "1.01"
 DEFAULT_CONFIG = {
     "bar_color": "#2f80ed",
     "background_color": "#d9dde7",
@@ -88,8 +87,8 @@ DEFAULT_DAILY_PROGRESS_PATH = os.path.join(
     os.path.dirname(__file__), "user_files", "daily_progress.json"
 )
 TIMING_HISTORY_DAYS = 15
+DAILY_PROGRESS_DAYS = 31
 MAX_HISTORY_RECORDS = 20000
-MAX_DAILY_PROGRESS_DAYS = 45
 
 _session_total = 0
 _show_bubble_once = False
@@ -100,6 +99,8 @@ _answer_seconds_samples: deque[float] = deque(maxlen=30)
 _answer_time_chart_samples: deque[dict[str, Any]] = deque(maxlen=5)
 _history_loaded = False
 _timing_history: list[dict[str, Any]] = []
+_daily_progress_loaded = False
+_daily_progress: dict[str, dict[str, int]] = {}
 
 
 def _config() -> dict[str, Any]:
@@ -222,92 +223,6 @@ def _migrate_timing_history(old_path: str, new_path: str) -> None:
         pass
 
 
-def _migrate_daily_progress(old_path: str, new_path: str) -> None:
-    if old_path == new_path:
-        return
-    old_records = _read_daily_progress_records_from_path(old_path)
-    new_records = _read_daily_progress_records_from_path(new_path)
-    merged = _merge_daily_progress_records(old_records, new_records)
-    try:
-        os.makedirs(os.path.dirname(new_path), exist_ok=True)
-        with open(new_path, "w", encoding="utf-8") as progress_file:
-            json.dump(
-                {"name": ADDON_NAME, "version": 1, "records": merged},
-                progress_file,
-                separators=(",", ":"),
-            )
-            progress_file.write("\n")
-    except Exception:
-        pass
-    if old_path != DEFAULT_DAILY_PROGRESS_PATH:
-        return
-    try:
-        if os.path.exists(old_path):
-            os.remove(old_path)
-    except Exception:
-        pass
-
-
-def _read_daily_progress_records_from_path(path: str) -> list[dict[str, Any]]:
-    try:
-        with open(path, encoding="utf-8") as progress_file:
-            return _normalized_daily_progress_records(json.load(progress_file))
-    except Exception:
-        return []
-
-
-def _merge_daily_progress_records(
-    first: list[dict[str, Any]], second: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    for record in first + second:
-        match_index = next(
-            (
-                index
-                for index, existing in enumerate(merged)
-                if existing.get("date") == record.get("date")
-                and (
-                    (
-                        existing.get("deck_id") is not None
-                        and existing.get("deck_id") == record.get("deck_id")
-                    )
-                    or _normalized_deck_name(str(existing.get("deck_name") or ""))
-                    == _normalized_deck_name(str(record.get("deck_name") or ""))
-                )
-            ),
-            None,
-        )
-        if match_index is None:
-            merged.append(record)
-            continue
-        existing = merged[match_index]
-        total = max(int(existing.get("total") or 1), int(record.get("total") or 1))
-        done = min(total, max(int(existing.get("done") or 0), int(record.get("done") or 0)))
-        updated_at = max(
-            float(existing.get("updated_at") or 0.0),
-            float(record.get("updated_at") or 0.0),
-        )
-        merged[match_index] = {
-            "date": existing.get("date") or record.get("date"),
-            "deck_id": existing.get("deck_id")
-            if existing.get("deck_id") is not None
-            else record.get("deck_id"),
-            "deck_name": existing.get("deck_name") or record.get("deck_name"),
-            "total": total,
-            "done": done,
-            "answer_time_chart": _normalized_answer_time_chart_samples(
-                (
-                    record
-                    if float(record.get("updated_at") or 0.0)
-                    >= float(existing.get("updated_at") or 0.0)
-                    else existing
-                ).get("answer_time_chart")
-            ),
-            "updated_at": updated_at,
-        }
-    return _pruned_daily_progress_records(merged)
-
-
 def _valid_hex(value: Any, fallback: str) -> str:
     if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
         return value
@@ -342,7 +257,8 @@ def _remaining_for_current_card(reviewer: Reviewer) -> int:
         return 0
 
 
-def _deck_id_for_card(card: Any) -> int | None:
+def _deck_id_for_current_card(reviewer: Reviewer) -> int | None:
+    card = getattr(reviewer, "card", None)
     if not card:
         return None
     try:
@@ -351,224 +267,108 @@ def _deck_id_for_card(card: Any) -> int | None:
         return None
 
 
-def _deck_id_for_current_card(reviewer: Reviewer) -> int | None:
-    return _deck_id_for_card(getattr(reviewer, "card", None))
-
-
-def _today_string() -> str:
-    return datetime.now().date().isoformat()
-
-
-def _normalized_deck_name(deck_name: str) -> str:
-    return " ".join(deck_name.casefold().split())
-
-
-def _normalized_answer_time_chart_samples(data: Any) -> list[dict[str, Any]]:
-    if not isinstance(data, list):
-        return []
-    samples: list[dict[str, Any]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        seconds = item.get("seconds")
-        if not isinstance(seconds, (int, float)):
-            continue
-        samples.append(
-            {
-                "seconds": round(min(600.0, max(0.2, float(seconds))), 3),
-                "again": bool(item.get("again", False)),
-            }
-        )
-    return samples[-5:]
-
-
-def _normalized_daily_progress_records(data: Any) -> list[dict[str, Any]]:
-    if isinstance(data, dict) and isinstance(data.get("records"), list):
-        data = data["records"]
-    if not isinstance(data, list):
-        return []
-
-    records: list[dict[str, Any]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        date_text = item.get("date")
-        deck_name = item.get("deck_name")
-        total = item.get("total")
-        done = item.get("done")
-        if not isinstance(date_text, str) or not isinstance(deck_name, str):
-            continue
+def _deck_id_for_progress(reviewer: Reviewer) -> int | None:
+    if mw.col:
         try:
-            date_text = datetime.fromisoformat(date_text).date().isoformat()
-            total_int = max(1, int(total))
-            done_int = min(total_int, max(0, int(done)))
+            deck = mw.col.decks.current()
+            deck_id = deck.get("id") if isinstance(deck, dict) else None
+            if deck_id is not None:
+                return int(deck_id)
         except Exception:
-            continue
-        deck_id = item.get("deck_id")
-        if deck_id is not None:
-            try:
-                deck_id = int(deck_id)
-            except Exception:
-                deck_id = None
-        updated_at = item.get("updated_at")
-        if not isinstance(updated_at, (int, float)):
-            updated_at = 0.0
-        answer_time_chart = _normalized_answer_time_chart_samples(
-            item.get("answer_time_chart")
-        )
-        records.append(
-            {
-                "date": date_text,
-                "deck_id": deck_id,
-                "deck_name": deck_name,
-                "total": total_int,
-                "done": done_int,
-                "answer_time_chart": answer_time_chart,
-                "updated_at": float(updated_at),
-            }
-        )
-    return _pruned_daily_progress_records(records)
+            pass
+    return _deck_id_for_current_card(reviewer)
 
 
-def _pruned_daily_progress_records(
-    records: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    today = datetime.now().date()
-    cutoff = today - timedelta(days=MAX_DAILY_PROGRESS_DAYS)
-    kept: list[dict[str, Any]] = []
-    for record in records:
-        try:
-            record_date = datetime.fromisoformat(str(record["date"])).date()
-        except Exception:
-            continue
-        if record_date >= cutoff:
-            kept.append(record)
-    kept.sort(
-        key=lambda record: (
-            str(record.get("date") or ""),
-            float(record.get("updated_at") or 0.0),
-        )
-    )
-    return kept
-
-
-def _read_daily_progress_records() -> list[dict[str, Any]]:
+def _load_daily_progress() -> None:
+    global _daily_progress_loaded, _daily_progress
+    if _daily_progress_loaded:
+        return
+    _daily_progress_loaded = True
     try:
         with open(_daily_progress_path(), encoding="utf-8") as progress_file:
-            return _normalized_daily_progress_records(json.load(progress_file))
+            data = json.load(progress_file)
     except Exception:
-        return []
+        _daily_progress = {}
+        return
+    if not isinstance(data, dict):
+        _daily_progress = {}
+        return
+
+    normalized: dict[str, dict[str, int]] = {}
+    for date_key, decks in data.items():
+        if not isinstance(date_key, str) or not isinstance(decks, dict):
+            continue
+        normalized_decks: dict[str, int] = {}
+        for deck_key, total in decks.items():
+            if not isinstance(deck_key, str):
+                continue
+            try:
+                total_int = int(total)
+            except Exception:
+                continue
+            if total_int > 0:
+                normalized_decks[deck_key] = total_int
+        if normalized_decks:
+            normalized[date_key] = normalized_decks
+    _daily_progress = normalized
+    _prune_daily_progress()
 
 
-def _write_daily_progress_records(records: list[dict[str, Any]]) -> None:
-    path = _daily_progress_path()
-    payload = {
-        "name": ADDON_NAME,
-        "version": 1,
-        "records": _pruned_daily_progress_records(records),
-    }
+def _prune_daily_progress() -> None:
+    cutoff = datetime.now().date() - timedelta(days=DAILY_PROGRESS_DAYS - 1)
+    for date_key in list(_daily_progress):
+        if not _date_key_is_recent(date_key, cutoff) or not _daily_progress[date_key]:
+            del _daily_progress[date_key]
+
+
+def _date_key_is_recent(date_key: str, cutoff: date) -> bool:
     try:
+        return datetime.fromisoformat(date_key).date() >= cutoff
+    except Exception:
+        return False
+
+
+def _write_daily_progress() -> None:
+    try:
+        path = _daily_progress_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as progress_file:
-            json.dump(payload, progress_file, separators=(",", ":"))
+            json.dump(_daily_progress, progress_file, indent=2, sort_keys=True)
             progress_file.write("\n")
     except Exception:
         pass
 
 
-def _daily_progress_matches_deck(
-    record: dict[str, Any], deck_id: int | None, deck_name: str
-) -> bool:
-    if record.get("date") != _today_string():
-        return False
-    record_deck_id = record.get("deck_id")
-    if deck_id is not None and record_deck_id == deck_id:
-        return True
-    return _normalized_deck_name(str(record.get("deck_name") or "")) == (
-        _normalized_deck_name(deck_name)
-    )
-
-
-def _daily_progress_for_deck(
-    deck_id: int | None, deck_name: str
-) -> dict[str, Any] | None:
-    matches = [
-        record
-        for record in _read_daily_progress_records()
-        if _daily_progress_matches_deck(record, deck_id, deck_name)
-    ]
-    if not matches:
+def _daily_start_total(reviewer: Reviewer, left: int) -> int | None:
+    _load_daily_progress()
+    deck_id = _deck_id_for_progress(reviewer)
+    if deck_id is None:
         return None
-    return max(matches, key=lambda record: float(record.get("updated_at") or 0.0))
 
+    today = datetime.now().date().isoformat()
+    deck_key = str(deck_id)
+    day_progress = _daily_progress.setdefault(today, {})
+    stored_total = day_progress.get(deck_key)
+    if isinstance(stored_total, int) and stored_total > 0:
+        return stored_total
+    if left <= 0:
+        return None
 
-def _save_daily_progress(
-    deck_id: int | None,
-    deck_name: str,
-    total: int,
-    done: int,
-    answer_time_chart: list[dict[str, Any]] | None = None,
-) -> None:
-    total = max(1, int(total))
-    done = min(total, max(0, int(done)))
-    chart_samples = _normalized_answer_time_chart_samples(answer_time_chart)
-    records = _read_daily_progress_records()
-    record = {
-        "date": _today_string(),
-        "deck_id": deck_id,
-        "deck_name": deck_name,
-        "total": total,
-        "done": done,
-        "answer_time_chart": chart_samples,
-        "updated_at": time.time(),
-    }
-    replaced = False
-    for index, existing in enumerate(records):
-        if not _daily_progress_matches_deck(existing, deck_id, deck_name):
-            continue
-        merged_total = max(total, int(existing.get("total") or 1))
-        merged_done = min(
-            merged_total, max(done, int(existing.get("done") or 0))
-        )
-        record["total"] = merged_total
-        record["done"] = merged_done
-        if not chart_samples:
-            record["answer_time_chart"] = _normalized_answer_time_chart_samples(
-                existing.get("answer_time_chart")
-            )
-        records[index] = record
-        replaced = True
-        break
-    if not replaced:
-        records.append(record)
-    _write_daily_progress_records(records)
+    day_progress[deck_key] = left
+    _prune_daily_progress()
+    _write_daily_progress()
+    return left
 
 
 def _progress_payload(reviewer: Reviewer) -> dict[str, Any]:
     global _session_total, _show_bubble_once
 
     left = _remaining_for_current_card(reviewer)
-    if left > _session_total:
+    daily_total = _daily_start_total(reviewer, left)
+    if daily_total is None and left > _session_total:
         _session_total = left
-    deck_id = _deck_id_for_current_card(reviewer)
-    deck_name = _deck_name(deck_id)
-    raw_total = max(_session_total, left, 1)
-    raw_done = max(0, raw_total - left)
-    saved_progress = _daily_progress_for_deck(deck_id, deck_name)
-    if saved_progress is not None:
-        total = max(raw_total, int(saved_progress.get("total") or 1))
-        done = min(total, max(raw_done, int(saved_progress.get("done") or 0)))
-        left = max(0, total - done)
-        if not _answer_time_chart_samples:
-            _answer_time_chart_samples.extend(
-                _normalized_answer_time_chart_samples(
-                    saved_progress.get("answer_time_chart")
-                )
-            )
-    else:
-        total = raw_total
-        done = raw_done
-    answer_time_chart = list(_answer_time_chart_samples)
+    total = max(daily_total or _session_total, 1)
+    done = max(0, total - left)
     percent = 100 if left == 0 else min(100, max(0, round((done / total) * 100)))
 
     config = _config()
@@ -611,7 +411,9 @@ def _progress_payload(reviewer: Reviewer) -> dict[str, Any]:
         text = f"{text} | {_format_seconds(_last_answer_seconds)}"
     detail_text = ""
     if config.get("show_estimated_time", True):
-        estimate_seconds = _estimate_remaining_seconds(left, deck_id)
+        estimate_seconds = _estimate_remaining_seconds(
+            left, _deck_id_for_current_card(reviewer)
+        )
         if estimate_seconds is not None:
             detail_text = f"Est. left {_format_duration(estimate_seconds)}"
             if config.get("show_finish_time", True):
@@ -639,7 +441,7 @@ def _progress_payload(reviewer: Reviewer) -> dict[str, Any]:
         "backgroundColor": bg_color,
         "bubbleColor": bubble_color,
         "bubbleTextColor": bubble_text_color,
-        "answerTimeChart": answer_time_chart,
+        "answerTimeChart": list(_answer_time_chart_samples),
         "chartGradientTop": chart_top,
         "chartGradientBottom": chart_bottom,
         "chartGoodGradientTop": chart_good_top,
@@ -803,26 +605,6 @@ def _record_answer_history(reviewer: Reviewer, seconds: float) -> None:
     )
     _prune_timing_history()
     _write_timing_history()
-
-
-def _record_answer_progress(reviewer: Reviewer, card: Any) -> None:
-    deck_id = _deck_id_for_card(card)
-    if deck_id is None:
-        deck_id = _deck_id_for_current_card(reviewer)
-    deck_name = _deck_name(deck_id)
-    left = _remaining_for_current_card(reviewer)
-    raw_total = max(_session_total, left + 1, 1)
-    raw_done = max(1, raw_total - left)
-    saved_progress = _daily_progress_for_deck(deck_id, deck_name)
-    if saved_progress is not None:
-        total = max(raw_total, int(saved_progress.get("total") or 1))
-        done = max(raw_done, int(saved_progress.get("done") or 0) + 1)
-    else:
-        total = raw_total
-        done = raw_done
-    _save_daily_progress(
-        deck_id, deck_name, total, done, list(_answer_time_chart_samples)
-    )
 
 
 def _load_timing_history() -> None:
@@ -1900,8 +1682,6 @@ class OptionsDialog(QDialog):
         hint = QLabel("Choose what the center bubble shows during review.")
         hint.setWordWrap(True)
         hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        version_label = QLabel(f"Version {ADDON_VERSION}")
-        version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -1922,7 +1702,6 @@ class OptionsDialog(QDialog):
 
         general_tab = QWidget()
         general_layout = QFormLayout(general_tab)
-        general_layout.addRow("Current version", version_label)
         general_layout.addRow("Bubble display", self.bubble_text)
         general_layout.addRow("Bubble time", self.bubble_duration)
         general_layout.addRow("", self.show_answer_time)
@@ -1984,7 +1763,6 @@ class OptionsDialog(QDialog):
             return
 
         old_path = _timing_history_path()
-        old_progress_path = _daily_progress_path()
         database_location = self.database_location.text().strip()
         if database_location:
             database_location = os.path.abspath(os.path.expanduser(database_location))
@@ -2021,7 +1799,6 @@ class OptionsDialog(QDialog):
             next_config
         )
         _migrate_timing_history(old_path, _timing_history_path(next_config))
-        _migrate_daily_progress(old_progress_path, _daily_progress_path(next_config))
         super().accept()
 
     def _choose_database_location(self) -> None:
@@ -2213,7 +1990,6 @@ def _on_reviewer_did_answer_card(reviewer: Reviewer, card: Any, ease: int) -> No
         _record_answer_history(reviewer, _last_answer_seconds)
     else:
         _last_answer_seconds = None
-    _record_answer_progress(reviewer, card)
     _show_bubble_once = True
 
 

@@ -19,7 +19,7 @@ Options can be changed from `Tools -> Progress bar pro`.
 - `chart_gradient_bottom`: bottom color for the estimate data area graph.
 - `chart_again_gradient_top`: top color used when the mini answer chart fades after an Again answer.
 - `chart_again_gradient_bottom`: bottom color used when the mini answer chart fades after an Again answer.
-- `database_location`: optional folder where `timing_history.json` is stored.
+- `database_location`: optional folder where add-on data files are stored.
 - `position`: `top` or `bottom`.
 
 Anki stores changed options in its generated add-on metadata. Progress Bar Pro

@@ -81,7 +81,8 @@ Color settings are grouped by what they affect:
 
 ### Data
 
-- `Database location`: optionally choose where `timing_history.json` is stored.
+- `Database location`: optionally choose where `timing_history.json` and
+  `daily_progress.json` are stored.
 - `Estimate history`: export or import the timing history JSON database.
 
 ## How Timing Works
@@ -102,6 +103,10 @@ answers are marked visually in the mini chart with the configured Again gradient
 By default, timing history is stored at:
 
 `progress_bar_pro/user_files/timing_history.json`
+
+Today's per-deck progress and mini answer-time chart are stored at:
+
+`progress_bar_pro/user_files/daily_progress.json`
 
 Saved options are handled by Anki's add-on config system and mirrored to:
 

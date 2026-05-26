@@ -8,5 +8,10 @@ The add-on also writes `timing_history.json` here. It keeps long-term answer
 times for smarter estimates, while the estimate data graph focuses on the most
 recent 15 days.
 
-If you set a custom database folder in Options, `timing_history.json` is moved
-there and this default copy is no longer used.
+The add-on writes `daily_progress.json` here to remember today's deck name,
+starting card count, answered count, and mini answer-time chart. If this folder
+is shared between computers, the reviewer progress bar and bubble-side chart can
+resume from the same state elsewhere.
+
+If you set a custom database folder in Options, add-on data files are stored
+there and these default copies are no longer used.
