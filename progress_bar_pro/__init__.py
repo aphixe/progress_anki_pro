@@ -49,7 +49,7 @@ from aqt.utils import showInfo
 
 
 ADDON_NAME = "Progress Bar Pro"
-ADDON_VERSION = "1.01"
+ADDON_VERSION = "1.01a"
 DEFAULT_CONFIG = {
     "bar_color": "#2f80ed",
     "background_color": "#d9dde7",
@@ -326,18 +326,163 @@ def _lighter_hex(value: str, amount: float = 0.42) -> str:
 
 def _remaining_for_current_card(reviewer: Reviewer) -> int:
     card = getattr(reviewer, "card", None)
+    if not card:
+        return 0
+
+    totals: list[int] = []
+    for name in ("_remaining", "remaining", "_remaining_counts", "remaining_counts"):
+        try:
+            value = getattr(reviewer, name)
+        except Exception:
+            continue
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        totals.append(_scheduler_counts_total(value))
+
+    if not mw.col:
+        return max(totals, default=0)
+
+    try:
+        totals.append(_scheduler_counts_total(mw.col.sched.counts(card)))
+    except Exception:
+        pass
+
+    try:
+        totals.append(_scheduler_counts_total(mw.col.sched.counts()))
+    except Exception:
+        pass
+
+    if not any(totals):
+        totals.append(_database_remaining_total(card))
+
+    return max(totals, default=0)
+
+
+def _scheduler_counts_total(counts: Any) -> int:
+    if counts is None:
+        return 0
+
+    parts: list[Any] = []
+    for names in (
+        ("new", "new_count"),
+        ("learn", "learning", "learning_count", "lrn"),
+        ("review", "review_count", "rev"),
+        ("relearn", "relearning", "relearning_count"),
+    ):
+        for name in names:
+            if isinstance(counts, dict) and name in counts:
+                parts.append(counts[name])
+                break
+            if hasattr(counts, name):
+                parts.append(getattr(counts, name))
+                break
+
+    if not parts:
+        if isinstance(counts, dict):
+            parts = list(counts.values())
+        else:
+            try:
+                parts = list(counts)
+            except TypeError:
+                parts = [counts]
+
+    total = 0
+    for part in parts:
+        try:
+            total += max(0, int(part))
+        except Exception:
+            continue
+    return total
+
+
+def _database_remaining_total(card: Any) -> int:
     if not card or not mw.col:
         return 0
 
+    deck_ids = _active_deck_ids(_deck_id_for_card(card))
+    if not deck_ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in deck_ids)
+    today = _scheduler_today()
     try:
-        counts = mw.col.sched.counts(card)
-    except TypeError:
-        counts = mw.col.sched.counts()
+        return max(
+            0,
+            int(
+                mw.col.db.scalar(
+                    f"""
+                    select count()
+                    from cards
+                    where did in ({placeholders})
+                    and queue >= 0
+                    and (
+                        queue in (0, 1)
+                        or (queue in (2, 3) and due <= ?)
+                    )
+                    """,
+                    *deck_ids,
+                    today,
+                )
+                or 0
+            ),
+        )
     except Exception:
         return 0
 
+
+def _active_deck_ids(fallback_deck_id: int | None) -> list[int]:
+    deck_id = fallback_deck_id
     try:
-        return max(0, int(sum(counts)))
+        selected = mw.col.decks.selected()
+        if selected is not None:
+            deck_id = int(selected)
+    except Exception:
+        pass
+
+    if deck_id is None:
+        return []
+
+    deck_ids = {deck_id}
+    try:
+        for child in mw.col.decks.children(deck_id):
+            if isinstance(child, (list, tuple)):
+                for value in reversed(child):
+                    try:
+                        deck_ids.add(int(value))
+                        break
+                    except Exception:
+                        continue
+            else:
+                try:
+                    deck_ids.add(int(child))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return sorted(deck_ids)
+
+
+def _scheduler_today() -> int:
+    sched = getattr(mw.col, "sched", None) if mw.col else None
+    for name in ("today", "today_int"):
+        try:
+            value = getattr(sched, name)
+        except Exception:
+            continue
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        try:
+            return int(value)
+        except Exception:
+            continue
+    try:
+        return int(mw.col.sched.today)
     except Exception:
         return 0
 
@@ -556,9 +701,14 @@ def _progress_payload(reviewer: Reviewer) -> dict[str, Any]:
     raw_done = max(0, raw_total - left)
     saved_progress = _daily_progress_for_deck(deck_id, deck_name)
     if saved_progress is not None:
+        live_left = left
         total = max(raw_total, int(saved_progress.get("total") or 1))
-        done = min(total, max(raw_done, int(saved_progress.get("done") or 0)))
-        left = max(0, total - done)
+        if live_left > 0:
+            left = live_left
+            done = max(0, total - left)
+        else:
+            done = min(total, max(raw_done, int(saved_progress.get("done") or 0)))
+            left = max(0, total - done)
         if not _answer_time_chart_samples:
             _answer_time_chart_samples.extend(
                 _normalized_answer_time_chart_samples(
@@ -633,6 +783,7 @@ def _progress_payload(reviewer: Reviewer) -> dict[str, Any]:
         "total": total,
         "percent": percent,
         "text": text,
+        "textTemplate": template,
         "detailText": detail_text,
         "barColor": bar_color,
         "barColorLight": _lighter_hex(bar_color),
@@ -1170,6 +1321,42 @@ def _inject_progress_bar(html_text: str, card: Any, context: str) -> str:
 <script>
 (function() {{
   const payload = {payload_json};
+  const visibleRemainingTotal = () => {{
+    const text = (document.body && document.body.innerText) || "";
+    const matches = [...text.matchAll(/(?:^|\\n)\\s*(\\d+)\\s*\\+\\s*(\\d+)\\s*\\+\\s*(\\d+)\\s*(?:\\n|$)/g)];
+    if (!matches.length) {{
+      return null;
+    }}
+    const match = matches[matches.length - 1];
+    const total = match.slice(1).reduce((sum, value) => sum + (Number(value) || 0), 0);
+    return total > 0 ? total : null;
+  }};
+  const applyVisibleRemainingTotal = () => {{
+    const visibleLeft = visibleRemainingTotal();
+    if (!visibleLeft || visibleLeft <= Number(payload.left || 0)) {{
+      return;
+    }}
+    const currentTotal = Math.max(
+      Number(payload.total) || 0,
+      visibleLeft + (Number(payload.done) || 0),
+      visibleLeft
+    );
+    payload.left = visibleLeft;
+    payload.total = currentTotal;
+    payload.done = Math.max(0, currentTotal - visibleLeft);
+    payload.percent = currentTotal > 0
+      ? Math.min(100, Math.max(0, Math.round((payload.done / currentTotal) * 100)))
+      : 0;
+    try {{
+      payload.text = String(payload.textTemplate || "{{left}} left").replace(
+        /\\{{(left|done|total|percent)\\}}/g,
+        (_match, key) => String(payload[key])
+      );
+    }} catch (_err) {{
+      payload.text = visibleLeft + " left";
+    }}
+  }};
+  applyVisibleRemainingTotal();
   const existing = document.getElementById("progress-bar-pro");
   if (existing) {{
     existing.remove();
